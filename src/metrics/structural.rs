@@ -32,18 +32,15 @@ pub fn analyze_structural(parsed: &ParsedSource) -> StructuralAnalysis {
     }
 
     // Determine common indent step (usually 2 or 4 spaces)
-    let mut step_counts = [0usize; 9]; // indices 1..8
+    let mut step_counts_2_only = 0usize;
     for line in &non_empty_lines {
         let spaces = line.indent_spaces;
-        if spaces > 0 {
-            if spaces % 4 == 0 {
-                step_counts[4] += 1;
-            } else if spaces % 2 == 0 {
-                step_counts[2] += 1;
-            }
+        if spaces > 0 && spaces % 2 == 0 && spaces % 4 != 0 {
+            step_counts_2_only += 1;
         }
     }
-    let detected_indent_step = if step_counts[2] > step_counts[4] * 2 {
+    // Any line with 2, 6, 10, 14... spaces indicates a 2-space indentation step
+    let detected_indent_step = if step_counts_2_only > 0 {
         2
     } else {
         4

@@ -76,10 +76,17 @@ impl Detector {
             final_score = final_score.max(0.85);
         }
 
-        let ai_probability = final_score.clamp(0.01, 0.99);
+        let is_empty_sample = parsed.code_lines == 0 && parsed.comment_lines == 0;
+        let ai_probability = if is_empty_sample {
+            0.0
+        } else {
+            final_score.clamp(0.01, 0.99)
+        };
         let percentage = (ai_probability * 1000.0).round() / 10.0;
 
-        let classification = if ai_probability >= 0.80 {
+        let classification = if is_empty_sample {
+            Classification::LikelyHuman
+        } else if ai_probability >= 0.80 {
             Classification::HighConfidenceAi
         } else if ai_probability >= 0.60 {
             Classification::LikelyAi
@@ -91,7 +98,9 @@ impl Detector {
             Classification::HighConfidenceHuman
         };
 
-        let confidence_level = if parsed.code_lines < 6 {
+        let confidence_level = if is_empty_sample {
+            "None (insufficient lines / empty file)".to_string()
+        } else if parsed.code_lines < 6 {
             "Low (insufficient lines for statistical confidence)".to_string()
         } else if parsed.code_lines < 20 {
             "Moderate (short file sample)".to_string()

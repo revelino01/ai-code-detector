@@ -56,7 +56,18 @@ fn main() {
             eprintln!("Error reading from stdin: {}", e);
             process::exit(1);
         }
-        let result = Detector::analyze(&buffer, "stdin");
+        let fake_path = match &args.ext {
+            Some(exts) => {
+                let first_ext = exts.split(',').next().unwrap_or("").trim().trim_start_matches('.');
+                if first_ext.is_empty() {
+                    "stdin".to_string()
+                } else {
+                    format!("stdin.{}", first_ext)
+                }
+            }
+            None => "stdin".to_string(),
+        };
+        let result = Detector::analyze(&buffer, &fake_path);
         handle_results(vec![result], &args);
         return;
     }
@@ -107,6 +118,16 @@ fn collect_files(
     allowed_exts: Option<&[String]>,
 ) -> Vec<PathBuf> {
     if root.is_file() {
+        if let Some(exts) = allowed_exts {
+            if let Some(ext) = root.extension().and_then(|e| e.to_str()) {
+                let ext_lower = ext.to_lowercase();
+                if !exts.iter().any(|allowed| allowed == &ext_lower) {
+                    return vec![];
+                }
+            } else {
+                return vec![];
+            }
+        }
         return vec![root.to_path_buf()];
     }
 

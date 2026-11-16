@@ -242,34 +242,29 @@ fn find_comment_start(line: &str, prefix: &str) -> Option<usize> {
     let mut in_single_quote = false;
     let mut in_double_quote = false;
     let mut escaped = false;
-    let chars: Vec<char> = line.chars().collect();
-    let prefix_chars: Vec<char> = prefix.chars().collect();
 
-    for i in 0..chars.len() {
-        let c = chars[i];
+    let mut iter = line.char_indices().peekable();
+    while let Some((byte_idx, ch)) = iter.next() {
         if escaped {
             escaped = false;
             continue;
         }
-        if c == '\\' {
+        if ch == '\\' {
             escaped = true;
             continue;
         }
-        if c == '"' && !in_single_quote {
+        if ch == '"' && !in_single_quote {
             in_double_quote = !in_double_quote;
             continue;
         }
-        if c == '\'' && !in_double_quote {
+        if ch == '\'' && !in_double_quote {
             in_single_quote = !in_single_quote;
             continue;
         }
 
         if !in_single_quote && !in_double_quote {
-            if i + prefix_chars.len() <= chars.len() {
-                let matches = (0..prefix_chars.len()).all(|j| chars[i + j] == prefix_chars[j]);
-                if matches {
-                    return Some(i);
-                }
+            if line[byte_idx..].starts_with(prefix) {
+                return Some(byte_idx);
             }
         }
     }

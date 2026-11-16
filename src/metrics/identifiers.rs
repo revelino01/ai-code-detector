@@ -32,6 +32,7 @@ pub fn analyze_identifiers(parsed: &ParsedSource) -> IdentifierAnalysis {
     }
 
     let mut unique_set = std::collections::HashSet::new();
+    let mut unique_human_abbrs = std::collections::HashSet::new();
     let mut total_len = 0;
     let mut short_count = 0;
     let mut human_abbr_count = 0;
@@ -61,6 +62,7 @@ pub fn analyze_identifiers(parsed: &ParsedSource) -> IdentifierAnalysis {
 
         if HUMAN_ABBREVIATIONS.contains(&lower.as_str()) {
             human_abbr_count += 1;
+            unique_human_abbrs.insert(lower);
         }
 
         // Multi-word descriptive identifiers typical of LLM output (e.g. is_valid_user, calculate_total)
@@ -119,10 +121,14 @@ pub fn analyze_identifiers(parsed: &ParsedSource) -> IdentifierAnalysis {
         ));
     }
 
-    if human_abbr_count >= 5 {
+    if unique_human_abbrs.len() >= 3 {
+        let mut sample_abbrs: Vec<String> = unique_human_abbrs.iter().cloned().collect();
+        sample_abbrs.sort();
+        let display_abbrs = sample_abbrs.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
         signals.push(format!(
-            "Found {} common human domain abbreviations (ctx, req, res, buf, etc.)",
-            human_abbr_count
+            "Found {} distinct human domain abbreviations ({})",
+            unique_human_abbrs.len(),
+            display_abbrs
         ));
     }
 
@@ -148,10 +154,12 @@ pub fn analyze_identifiers(parsed: &ParsedSource) -> IdentifierAnalysis {
         prob += 0.15;
     }
 
-    // Human abbreviations
-    let abbr_ratio = human_abbr_count as f64 / total as f64;
-    if abbr_ratio > 0.15 {
+    // Human abbreviations: reward diverse human abbreviation vocabulary
+    let unique_abbr_count = unique_human_abbrs.len();
+    if unique_abbr_count >= 5 {
         prob -= 0.15;
+    } else if unique_abbr_count >= 3 {
+        prob -= 0.08;
     }
 
     // High casing uniformity adds slight AI probability

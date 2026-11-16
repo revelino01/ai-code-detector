@@ -106,7 +106,40 @@ fn test_edge_case_empty_file() {
     let result = Detector::analyze("", "empty.rs");
     assert_eq!(result.lines_total, 0);
     assert_eq!(result.lines_code, 0);
+    assert_eq!(result.ai_probability, 0.0);
     assert!(result.confidence_level.contains("insufficient"));
+}
+
+#[test]
+fn test_utf8_multibyte_inline_comments() {
+    let src = "let greeting = \"你好，世界 🦀\"; // say hello in Chinese\nlet price = \"100€\"; // currency symbol\n";
+    let parsed = ParsedSource::parse(src, Language::Rust);
+    assert_eq!(parsed.comments.len(), 2);
+    assert_eq!(parsed.comments[0], "say hello in Chinese");
+    assert_eq!(parsed.comments[1], "currency symbol");
+    assert_eq!(parsed.code_lines, 2);
+
+    let result = Detector::analyze(src, "utf8.rs");
+    assert_eq!(result.lines_code, 2);
+    assert_eq!(result.lines_total, 2);
+    assert!(result.ai_probability > 0.0);
+}
+
+#[test]
+fn test_two_space_indentation_structural() {
+    let src = "function main() {\n  let a = 1;\n  if (a > 0) {\n    let b = 2;\n    if (b > 1) {\n      return b;\n    }\n  }\n  return a;\n}\n";
+    let parsed = ParsedSource::parse(src, Language::JavaScript);
+    let structural = ai_code_detector::metrics::structural::analyze_structural(&parsed);
+    assert_eq!(structural.detected_indent_step, 2);
+    assert!((structural.indentation_uniformity - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn test_url_in_string_not_comment() {
+    let src = "const api = \"https://api.example.com/v1\";\nconst color = \"#ff00ff\";\n";
+    let parsed = ParsedSource::parse(src, Language::JavaScript);
+    assert_eq!(parsed.comments.len(), 0);
+    assert_eq!(parsed.code_lines, 2);
 }
 
 #[test]

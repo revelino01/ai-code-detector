@@ -51,6 +51,24 @@ class TestAiCodeDetectorPython(unittest.TestCase):
         result = detect("", "empty.py")
         self.assertEqual(result["lines_total"], 0)
         self.assertEqual(result["lines_code"], 0)
+        self.assertEqual(result["ai_probability"], 0.0)
+
+    def test_utf8_multibyte_comments(self):
+        src = 'greeting = "你好，世界 🦀" # say hello\n'
+        result = detect(src, "test.py")
+        self.assertEqual(result["lines_code"], 1)
+        self.assertEqual(result["lines_total"], 1)
+
+    def test_url_not_parsed_as_comment(self):
+        src = 'url = "https://example.com/api"\ncolor = "#123456"\n'
+        result = detect(src, "test.py")
+        self.assertEqual(result["lines_comment"], 0)
+        self.assertEqual(result["lines_code"], 2)
+
+    def test_two_space_indentation(self):
+        src = "function main() {\n  let a = 1;\n  if (a > 0) {\n    let b = 2;\n    return b;\n  }\n  return a;\n}\n"
+        result = detect(src, "test.js")
+        self.assertEqual(result["lines_code"], 8)
 
 
 if __name__ == "__main__":

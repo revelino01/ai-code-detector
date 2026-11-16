@@ -67,6 +67,38 @@ LLM_FINGERPRINTS = [
 ]
 
 
+def find_comment_start(line: str, prefix: str) -> int:
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+    prefix_len = len(prefix)
+    i = 0
+    n = len(line)
+    while i < n:
+        c = line[i]
+        if escaped:
+            escaped = False
+            i += 1
+            continue
+        if c == '\\':
+            escaped = True
+            i += 1
+            continue
+        if c == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            i += 1
+            continue
+        if c == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            i += 1
+            continue
+        if not in_single_quote and not in_double_quote:
+            if line[i:i + prefix_len] == prefix:
+                return i
+        i += 1
+    return -1
+
+
 def detect_language(path_str: str) -> str:
     ext = Path(path_str).suffix.lower().lstrip(".")
     mapping = {
@@ -143,18 +175,21 @@ def parse_source(content: str, language: str) -> Dict[str, Any]:
             if trimmed.startswith(comment_prefix):
                 comment_lines += 1
                 c_text = trimmed[len(comment_prefix):].strip()
-                extracted_comments.append(c_text)
-                comment_part = c_text
+                if c_text:
+                    extracted_comments.append(c_text)
+                    comment_part = c_text
                 code_part = ""
-            elif comment_prefix in trimmed:
-                parts = trimmed.split(comment_prefix, 1)
-                code_part = parts[0].strip()
-                c_text = parts[1].strip()
-                extracted_comments.append(c_text)
-                comment_part = c_text
-                code_lines += 1
             else:
-                code_lines += 1
+                c_idx = find_comment_start(trimmed, comment_prefix)
+                if c_idx != -1:
+                    code_part = trimmed[:c_idx].strip()
+                    c_text = trimmed[c_idx + len(comment_prefix):].strip()
+                    if c_text:
+                        extracted_comments.append(c_text)
+                        comment_part = c_text
+                    code_lines += 1
+                else:
+                    code_lines += 1
 
         line_records.append({
             "raw": raw,
@@ -272,6 +307,7 @@ def analyze_identifiers(parsed: Dict[str, Any]) -> Dict[str, Any]:
     short_count = sum(1 for i in idents if len(i) <= 3)
     short_ratio = short_count / total
     human_abbr_count = sum(1 for i in idents if i.lower() in HUMAN_ABBREVIATIONS)
+    unique_human_abbrs = {i.lower() for i in idents if i.lower() in HUMAN_ABBREVIATIONS}
     descriptive_count = sum(1 for i in idents if len(i) >= 8 and ('_' in i or any(c.isupper() for c in i[1:])))
     descriptive_ratio = descriptive_count / total
 
@@ -288,8 +324,10 @@ def analyze_identifiers(parsed: Dict[str, Any]) -> Dict[str, Any]:
     if descriptive_ratio >= 0.40:
         signals.append(f"Dense usage of descriptive multi-word identifiers ({descriptive_ratio * 100:.1f}%)")
 
-    if human_abbr_count >= 5:
-        signals.append(f"Found {human_abbr_count} common human domain abbreviations (ctx, req, res, buf, etc.)")
+    unique_abbr_count = len(unique_human_abbrs)
+    if unique_abbr_count >= 3:
+        sample_abbrs = ", ".join(sorted(unique_human_abbrs)[:5])
+        signals.append(f"Found {unique_abbr_count} distinct human domain abbreviations ({sample_abbrs})")
 
     prob = 0.50
     if avg_length >= 9.0:
@@ -305,8 +343,10 @@ def analyze_identifiers(parsed: Dict[str, Any]) -> Dict[str, Any]:
     if descriptive_ratio > 0.35:
         prob += 0.15
 
-    if (human_abbr_count / total) > 0.15:
+    if unique_abbr_count >= 5:
         prob -= 0.15
+    elif unique_abbr_count >= 3:
+        prob -= 0.08
 
     return {
         "total_identifiers": total,
@@ -406,9 +446,8 @@ def analyze_structural(parsed: Dict[str, Any]) -> Dict[str, Any]:
 
     indents = [l["indent"] for l in lines if l["indent"] > 0]
     total_indented = len(indents)
-    c4 = sum(1 for i in indents if i % 4 == 0)
-    c2 = sum(1 for i in indents if i % 2 == 0)
-    step = 2 if c2 > c4 * 2 else 4
+    c2_only = sum(1 for i in indents if i % 2 == 0 and i % 4 != 0)
+    step = 2 if c2_only > 0 else 4
 
     matching = sum(1 for i in indents if i % step == 0)
     uniformity = (matching / total_indented) if total_indented > 0 else 1.0
@@ -515,24 +554,31 @@ def detect(content: str, file_path: str = "snippet") -> Dict[str, Any]:
     if m_fingers["matched_patterns_count"] >= 2:
         final_score = max(0.85, final_score)
 
-    ai_prob = max(0.01, min(0.99, final_score))
-    pct = round(ai_prob * 100, 1)
-
-    if ai_prob >= 0.80:
-        cls_name = "HighConfidenceAi"
-        label = "AI-Generated (High Confidence)"
-    elif ai_prob >= 0.60:
-        cls_name = "LikelyAi"
-        label = "Likely AI-Generated"
-    elif ai_prob >= 0.40:
-        cls_name = "MixedOrUncertain"
-        label = "Mixed / Uncertain (Human + AI)"
-    elif ai_prob >= 0.20:
+    is_empty_sample = parsed["code_lines"] == 0 and parsed["comment_lines"] == 0
+    if is_empty_sample:
+        ai_prob = 0.0
+        pct = 0.0
         cls_name = "LikelyHuman"
         label = "Likely Human-Written"
     else:
-        cls_name = "HighConfidenceHuman"
-        label = "Human-Written (High Confidence)"
+        ai_prob = max(0.01, min(0.99, final_score))
+        pct = round(ai_prob * 100, 1)
+
+        if ai_prob >= 0.80:
+            cls_name = "HighConfidenceAi"
+            label = "AI-Generated (High Confidence)"
+        elif ai_prob >= 0.60:
+            cls_name = "LikelyAi"
+            label = "Likely AI-Generated"
+        elif ai_prob >= 0.40:
+            cls_name = "MixedOrUncertain"
+            label = "Mixed / Uncertain (Human + AI)"
+        elif ai_prob >= 0.20:
+            cls_name = "LikelyHuman"
+            label = "Likely Human-Written"
+        else:
+            cls_name = "HighConfidenceHuman"
+            label = "Human-Written (High Confidence)"
 
     return {
         "file_path": file_path,
@@ -551,27 +597,50 @@ def detect(content: str, file_path: str = "snippet") -> Dict[str, Any]:
 def main():
     parser = argparse.ArgumentParser(description="Statistical and heuristic detector for AI-generated source code")
     parser.add_argument("target", nargs="?", default=".", help="Target file or directory (or '-' for stdin)")
+    parser.add_argument("-e", "--ext", help="Comma-separated list of file extensions to include (e.g. rs,py,js,ts,go,cpp)")
     parser.add_argument("--json", action="store_true", help="Output in JSON format")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose details")
     parser.add_argument("-t", "--threshold", type=float, help="Fail threshold (0.0 - 1.0)")
     args = parser.parse_args()
 
+    allowed_exts = None
+    if args.ext:
+        allowed_exts = {e.strip().lstrip(".").lower() for e in args.ext.split(",") if e.strip()}
+
+    supported_exts = {
+        "py", "pyw", "rs", "js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx",
+        "c", "h", "cpp", "cxx", "cc", "hpp", "hxx", "go", "java"
+    }
+
     results = []
     if args.target == "-":
         content = sys.stdin.read()
-        results.append(detect(content, "stdin"))
+        fake_name = "stdin"
+        if args.ext:
+            first_ext = args.ext.split(",")[0].strip().lstrip(".")
+            if first_ext:
+                fake_name = f"stdin.{first_ext}"
+        results.append(detect(content, fake_name))
     else:
         target_path = Path(args.target)
+        if not target_path.exists():
+            sys.stderr.write(f"Error: Target path '{args.target}' does not exist.\n")
+            sys.exit(1)
+
         if target_path.is_file():
-            content = target_path.read_text(encoding="utf-8", errors="ignore")
-            results.append(detect(content, str(target_path)))
+            ext = target_path.suffix.lower().lstrip(".")
+            if allowed_exts is None or ext in allowed_exts:
+                content = target_path.read_text(encoding="utf-8", errors="ignore")
+                results.append(detect(content, str(target_path)))
         elif target_path.is_dir():
             for root, _, files in os.walk(target_path):
-                if any(ignored in root for ignored in [".git", "target", "node_modules"]):
+                if any(ignored in root for ignored in [".git", "target", "node_modules", "vendor"]):
                     continue
                 for f in files:
                     fp = Path(root) / f
-                    if fp.suffix.lower() in {".py", ".rs", ".js", ".ts", ".c", ".cpp", ".go", ".java"}:
+                    ext = fp.suffix.lower().lstrip(".")
+                    is_match = (ext in allowed_exts) if allowed_exts is not None else (ext in supported_exts)
+                    if is_match:
                         try:
                             content = fp.read_text(encoding="utf-8", errors="ignore")
                             results.append(detect(content, str(fp)))
@@ -581,13 +650,32 @@ def main():
     if args.json:
         print(json.dumps(results, indent=2))
     else:
+        badge_map = {
+            "HighConfidenceAi": "[ HIGH AI ]",
+            "LikelyAi": "[ LIKELY AI ]",
+            "MixedOrUncertain": "[ MIXED/UNCERTAIN ]",
+            "LikelyHuman": "[ LIKELY HUMAN ]",
+            "HighConfidenceHuman": "[ HIGH HUMAN ]",
+        }
         for r in results:
-            badge = f"[{r['label']}]"
+            badge = badge_map.get(r["classification"], f"[{r['label']}]")
             print(f"{badge}\t{r['file_path']}\t({r['percentage']}% AI probability)")
             if args.verbose:
                 for s in r["signals"]:
                     print(f"  • {s}")
                 print()
+
+        if len(results) > 1:
+            total = len(results)
+            ai_count = sum(1 for r in results if r["classification"] in {"HighConfidenceAi", "LikelyAi"})
+            human_count = sum(1 for r in results if r["classification"] in {"LikelyHuman", "HighConfidenceHuman"})
+            mixed_count = sum(1 for r in results if r["classification"] == "MixedOrUncertain")
+            print("--------------------------------------------------")
+            print(f"Scan Summary: {total} files analyzed")
+            print(f"  ● Likely AI: {ai_count} ({(ai_count / total) * 100:.1f}%)")
+            print(f"  ● Likely Human: {human_count} ({(human_count / total) * 100:.1f}%)")
+            print(f"  ● Mixed / Uncertain: {mixed_count} ({(mixed_count / total) * 100:.1f}%)")
+            print("--------------------------------------------------")
 
     if args.threshold is not None:
         if any(r["ai_probability"] >= args.threshold for r in results):
